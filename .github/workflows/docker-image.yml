@@ -4,12 +4,12 @@ on:
   workflow_dispatch:
   push:
     branches:
-      - "dev"
+      - "main"
     tags:
       - "v*"
   pull_request:
     branches:
-      - "dev"
+      - "main"
 
 env:
   REGISTRY: ghcr.io
@@ -129,12 +129,15 @@ jobs:
         uses: docker/metadata-action@v6
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          # fork releases are tagged vX.Y.Z-fork.N, which semver treats as a
+          # pre-release and never marks as latest, hence the raw rule
           tags: |
             type=ref,event=branch
             type=ref,event=pr
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
 
       # Determine if we should push the image
       - name: Set push flag
