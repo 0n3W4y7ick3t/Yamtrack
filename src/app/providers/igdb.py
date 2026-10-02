@@ -8,10 +8,15 @@ from django.utils import timezone
 
 from app import helpers
 from app.models import MediaTypes, Sources
-from app.providers import services
+from app.providers import japanese, services
 
 logger = logging.getLogger(__name__)
 base_url = "https://api.igdb.com/v4"
+
+
+def escape_query(query):
+    """Escape a search text for use inside a quoted APIcalypse string."""
+    return query.replace("\\", "\\\\").replace('"', '\\"')
 
 
 class ExternalGameSource(IntEnum):
@@ -188,8 +193,13 @@ def search(query, page):
             "Authorization": f"Bearer {access_token}",
         }
 
+        # localized and alternative names let a game be found by its Japanese name
+        escaped_query = escape_query(query)
         base_conditions = (
-            f'where name ~ *"{query}"* & game_type = (0,1,2,3,4,5,6,7,8,9,10)'
+            f'where (name ~ *"{escaped_query}"*'
+            f' | alternative_names.name ~ *"{escaped_query}"*'
+            f' | game_localizations.name ~ *"{escaped_query}"*)'
+            " & game_type = (0,1,2,3,4,5,6,7,8,9,10)"
         )
 
         if not settings.IGDB_NSFW:
@@ -200,7 +210,8 @@ def search(query, page):
         # Create the multiquery with both search and count
         multiquery = (
             'query games "SearchResults" {'
-            "fields name,cover.image_id;"
+            "fields name,cover.image_id,"
+            "game_localizations.name,game_localizations.region.identifier;"
             "sort total_rating_count desc;"
             f"limit {settings.PER_PAGE};"
             f"offset {offset};"
@@ -248,6 +259,7 @@ def search(query, page):
                 "source": Sources.IGDB.value,
                 "media_type": MediaTypes.GAME.value,
                 "title": media["name"],
+                "native_title": japanese.igdb_native_title(media),
                 "image": get_image_url(media),
             }
             for media in search_results

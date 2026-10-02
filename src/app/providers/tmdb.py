@@ -8,7 +8,7 @@ from django.utils import timezone
 
 from app import helpers
 from app.models import MediaTypes, Sources
-from app.providers import services
+from app.providers import japanese, services
 
 logger = logging.getLogger(__name__)
 base_url = "https://api.themoviedb.org/3"
@@ -97,12 +97,17 @@ def search(media_type, query, page):
         except requests.exceptions.HTTPError as error:
             handle_error(error)
 
+        japanese_titles = {}
+        if japanese.contains_japanese(query):
+            japanese_titles = japanese.tmdb_japanese_titles(url, params)
+
         results = [
             {
                 "media_id": media["id"],
                 "source": Sources.TMDB.value,
                 "media_type": media_type,
                 "title": get_title(media),
+                "native_title": japanese.tmdb_native_title(media, japanese_titles),
                 "image": get_image_url(media["poster_path"]),
             }
             for media in response["results"]
