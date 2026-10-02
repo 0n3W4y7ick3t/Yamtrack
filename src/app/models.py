@@ -422,7 +422,11 @@ class MediaManager(models.Manager):
     ):
         """Get a home media list for a specific status grouped by media type."""
         list_by_type = {}
-        media_types = self._get_media_types_to_process(user, specific_media_type)
+        media_types = self._get_media_types_to_process(
+            user,
+            specific_media_type,
+            status,
+        )
 
         for media_type in media_types:
             # Get base media list for the requested status
@@ -432,6 +436,9 @@ class MediaManager(models.Manager):
                 status_filter=status,
                 sort_filter=None,
             )
+
+            if media_type == MediaTypes.TV.value:
+                media_list = self._exclude_tv_shown_by_seasons(media_list)
 
             if not media_list:
                 continue
@@ -459,16 +466,30 @@ class MediaManager(models.Manager):
 
         return list_by_type
 
-    def _get_media_types_to_process(self, user, specific_media_type):
+    def _get_media_types_to_process(self, user, specific_media_type, status=None):
         """Determine which media types to process based on user settings."""
+        # TV shows are represented by their seasons, except when planning:
+        # a planning show may have no season on home to stand for it
+        include_tv = status == Status.PLANNING.value
+
         if specific_media_type:
+            if specific_media_type == MediaTypes.TV.value and not include_tv:
+                return []
             return [specific_media_type]
 
-        # Get active types excluding TV
         return [
             media_type
             for media_type in user.get_active_media_types()
-            if media_type != MediaTypes.TV.value
+            if include_tv or media_type != MediaTypes.TV.value
+        ]
+
+    def _exclude_tv_shown_by_seasons(self, tv_list):
+        """Drop TV shows that home already shows through one of their seasons."""
+        home_statuses = {Status.IN_PROGRESS.value, Status.PLANNING.value}
+        return [
+            tv
+            for tv in tv_list
+            if not any(season.status in home_statuses for season in tv.seasons.all())
         ]
 
     def _annotate_next_event(self, media_list):

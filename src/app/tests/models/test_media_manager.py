@@ -7,6 +7,7 @@ from django.db.models import Prefetch
 from django.test import TestCase
 from django.utils import timezone
 
+from app.mixins import disable_fetch_releases
 from app.models import (
     TV,
     Anime,
@@ -680,6 +681,137 @@ class MediaManagerTests(TestCase):
                 for media in load_more_page[MediaTypes.BOOK.value]["items"]
             ],
             ["Foundation", "Hyperion"],
+        )
+
+    def _create_tv_show(self, media_id, title, status):
+        """Create a TV show that has no tracked seasons."""
+        item = Item.objects.create(
+            media_id=media_id,
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title=title,
+            image="http://example.com/image.jpg",
+        )
+        with disable_fetch_releases():
+            return TV.objects.create(item=item, user=self.user, status=status)
+
+    def _home_tv_titles(self, status, **kwargs):
+        """Return the titles of the TV shows listed on home for a status."""
+        home_status = MediaManager().get_home_status(
+            user=self.user,
+            status=status,
+            sort_by=HomeSortChoices.TITLE,
+            items_limit=14,
+            **kwargs,
+        )
+        tv_list = home_status.get(MediaTypes.TV.value, {"items": []})
+        return [media.item.title for media in tv_list["items"]]
+
+    def test_get_home_status_planning_lists_tv_show_without_seasons(self):
+        """A planning TV show has no seasons, so it has to be listed itself."""
+        self._create_tv_show("95396", "Severance", Status.PLANNING.value)
+
+        home_status = MediaManager().get_home_status(
+            user=self.user,
+            status=Status.PLANNING.value,
+            sort_by=HomeSortChoices.TITLE,
+            items_limit=14,
+        )
+
+        self.assertIn(MediaTypes.TV.value, home_status)
+        self.assertEqual(home_status[MediaTypes.TV.value]["total"], 1)
+        self.assertEqual(
+            [media.item.title for media in home_status[MediaTypes.TV.value]["items"]],
+            ["Severance"],
+        )
+
+    def test_get_home_status_planning_skips_tv_shows_when_tv_is_disabled(self):
+        """A user who disabled TV shows does not get planning shows on home."""
+        self._create_tv_show("95396", "Severance", Status.PLANNING.value)
+        self.user.tv_enabled = False
+        self.user.save()
+
+        self.assertEqual(self._home_tv_titles(Status.PLANNING.value), [])
+
+    def test_get_home_status_in_progress_skips_tv_show_between_seasons(self):
+        """An in-progress show is never listed, even with no season on home."""
+        Season.objects.filter(pk=self.season1.pk).update(status=Status.COMPLETED.value)
+
+        self.assertEqual(self.tv.status, Status.IN_PROGRESS.value)
+        self.assertEqual(self._home_tv_titles(Status.IN_PROGRESS.value), [])
+
+    def test_get_home_status_in_progress_load_more_returns_no_tv_shows(self):
+        """Load more cannot return in-progress shows, which have no progress card."""
+        Season.objects.filter(pk=self.season1.pk).update(status=Status.COMPLETED.value)
+
+        home_status = MediaManager().get_home_status(
+            user=self.user,
+            status=Status.IN_PROGRESS.value,
+            sort_by=HomeSortChoices.TITLE,
+            items_limit=0,
+            specific_media_type=MediaTypes.TV.value,
+        )
+
+        self.assertEqual(self.tv.status, Status.IN_PROGRESS.value)
+        self.assertEqual(home_status, {})
+
+    def test_get_home_status_planning_skips_tv_show_with_planning_season(self):
+        """A planning season is already on home, so its show is not repeated."""
+        season_item = Item.objects.create(
+            media_id="1399",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.SEASON.value,
+            title="Game of Thrones",
+            image="http://example.com/image.jpg",
+            season_number=1,
+        )
+        with disable_fetch_releases():
+            season = Season.objects.create(
+                item=season_item,
+                user=self.user,
+                status=Status.PLANNING.value,
+            )
+
+        # adding a season as planning creates its show as planning too
+        self.assertEqual(season.related_tv.status, Status.PLANNING.value)
+        self.assertEqual(self._home_tv_titles(Status.PLANNING.value), [])
+
+    def test_get_home_status_planning_skips_tv_show_with_in_progress_season(self):
+        """An in-progress season is already on home, so its show is not repeated."""
+        TV.objects.filter(pk=self.tv.pk).update(status=Status.PLANNING.value)
+
+        self.assertEqual(self.season1.status, Status.IN_PROGRESS.value)
+        self.assertEqual(self._home_tv_titles(Status.PLANNING.value), [])
+
+    def test_get_home_status_planning_lists_tv_show_with_paused_season(self):
+        """A paused season is not on home, so its planning show is listed."""
+        TV.objects.filter(pk=self.tv.pk).update(status=Status.PLANNING.value)
+        Season.objects.filter(pk=self.season1.pk).update(status=Status.PAUSED.value)
+
+        self.assertEqual(self._home_tv_titles(Status.PLANNING.value), ["Friends"])
+
+    def test_get_home_status_planning_load_more_skips_tv_show_with_season(self):
+        """Load more for planning TV shows applies the same season rule."""
+        for media_id, title in (
+            ("83867", "Andor"),
+            ("95396", "Severance"),
+            ("126308", "Shogun"),
+        ):
+            self._create_tv_show(media_id, title, Status.PLANNING.value)
+        TV.objects.filter(pk=self.tv.pk).update(status=Status.PLANNING.value)
+
+        home_status = MediaManager().get_home_status(
+            user=self.user,
+            status=Status.PLANNING.value,
+            sort_by=HomeSortChoices.TITLE,
+            items_limit=1,
+            specific_media_type=MediaTypes.TV.value,
+        )
+
+        self.assertEqual(home_status[MediaTypes.TV.value]["total"], 3)
+        self.assertEqual(
+            [media.item.title for media in home_status[MediaTypes.TV.value]["items"]],
+            ["Severance", "Shogun"],
         )
 
     def test_annotate_next_event(self):
