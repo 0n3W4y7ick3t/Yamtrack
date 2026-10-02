@@ -103,6 +103,10 @@
     <a href="{{ item|media_url }}"
        class="text-sm font-semibold text-white hover:text-indigo-400 transition duration-300 line-clamp-1"
        title="{{ title }}">{{ title }}</a>
+    {% if item.native_title and item.native_title != title %}
+      <p class="text-xs text-gray-400 line-clamp-1"
+         title="{{ item.native_title }}">{{ item.native_title }}</p>
+    {% endif %}
   </div>
 
   {% if item.media_type == MediaTypes.EPISODE.value %}
