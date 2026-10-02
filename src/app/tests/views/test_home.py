@@ -5,7 +5,9 @@ from django.test import TestCase
 from django.urls import reverse
 from django.utils import timezone
 
+from app.mixins import disable_fetch_releases
 from app.models import (
+    TV,
     Anime,
     Episode,
     Item,
@@ -442,3 +444,75 @@ class HomeViewTests(TestCase):
         self.assertIn("media_list", response.context)
         self.assertEqual(len(response.context["media_list"]["items"]), 2)
         self.assertEqual(response.context["media_list"]["total"], 16)
+
+    def test_home_view_shows_planning_tv_show(self):
+        """A planning TV show without seasons is rendered in the planning section."""
+        tv_item = Item.objects.create(
+            media_id="95396",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Severance",
+            image="http://example.com/image.jpg",
+        )
+        with disable_fetch_releases():
+            TV.objects.create(
+                item=tv_item,
+                user=self.user,
+                status=Status.PLANNING.value,
+            )
+
+        response = self.client.get(reverse("home"))
+
+        self.assertEqual(response.status_code, 200)
+        sections_by_key = {
+            section["key"]: section for section in response.context["home_sections"]
+        }
+        planning_types = sections_by_key[Status.PLANNING.value]["media_types"]
+        self.assertIn(MediaTypes.TV.value, planning_types)
+        planning_shows = planning_types[MediaTypes.TV.value]
+        self.assertEqual(
+            [media.item.title for media in planning_shows["items"]],
+            ["Severance"],
+        )
+        self.assertContains(response, "Severance")
+
+    def test_home_view_skips_in_progress_tv_show_between_seasons(self):
+        """An in-progress show with no season on home is not rendered as a show."""
+        Season.objects.filter(user=self.user).update(status=Status.COMPLETED.value)
+
+        response = self.client.get(reverse("home"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            TV.objects.get(user=self.user).status, Status.IN_PROGRESS.value
+        )
+        in_progress_section = next(
+            section
+            for section in response.context["home_sections"]
+            if section["key"] == Status.IN_PROGRESS.value
+        )
+        self.assertNotIn(MediaTypes.TV.value, in_progress_section["media_types"])
+        self.assertNotIn(MediaTypes.SEASON.value, in_progress_section["media_types"])
+
+    def test_home_view_renders_planning_tv_show_with_every_sort(self):
+        """Every home sort can order a TV show, which has no progress of its own."""
+        tv_item = Item.objects.create(
+            media_id="95396",
+            source=Sources.TMDB.value,
+            media_type=MediaTypes.TV.value,
+            title="Severance",
+            image="http://example.com/image.jpg",
+        )
+        with disable_fetch_releases():
+            TV.objects.create(
+                item=tv_item,
+                user=self.user,
+                status=Status.PLANNING.value,
+            )
+
+        for sort in HomeSortChoices.values:
+            with self.subTest(sort=sort):
+                response = self.client.get(reverse("home") + f"?sort={sort}")
+
+                self.assertEqual(response.status_code, 200)
+                self.assertContains(response, "Severance")
