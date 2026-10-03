@@ -8,10 +8,11 @@ from django.core.cache import cache
 
 from app import helpers
 from app.models import MediaTypes, Sources
-from app.providers import services
+from app.providers import japanese, services
 
 logger = logging.getLogger(__name__)
 base_url = "https://api.myanimelist.net/v2"
+min_query_length = 3
 base_fields = "title,main_picture,media_type,start_date,end_date,synopsis,status,genres,mean,num_scoring_users,recommendations"  # noqa: E501
 
 
@@ -45,11 +46,21 @@ def search(media_type, query, page):
     cache_key = f"search_{Sources.MAL.value}_{media_type}_{query}_{page}"
     data = cache.get(cache_key)
 
+    if data is None and (
+        len(query.strip()) < min_query_length and japanese.contains_japanese(query)
+    ):
+        # too short for MyAnimeList, which is common for Japanese titles
+        data = japanese.anilist_search(media_type, query, page)
+        if data is None:
+            # answer this request empty without remembering the failure
+            return helpers.format_search_response(page, settings.PER_PAGE, 0, [])
+        cache.set(cache_key, data)
+
     if data is None:
         url = f"{base_url}/{media_type}"
         params = {
             "q": query,
-            "fields": "media_type",
+            "fields": "media_type,alternative_titles",
             "limit": settings.PER_PAGE,
             "offset": (page - 1) * settings.PER_PAGE,
         }
@@ -74,6 +85,7 @@ def search(media_type, query, page):
                 "source": Sources.MAL.value,
                 "media_type": media_type,
                 "title": media["node"]["title"],
+                "native_title": japanese.mal_native_title(media["node"]),
                 "image": get_image_url(media["node"]),
             }
             for media in response
