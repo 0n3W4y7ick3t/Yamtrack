@@ -5,7 +5,7 @@ from django.core.cache import cache
 from django.test import TestCase, override_settings
 
 from app.models import MediaTypes, Sources
-from app.providers import igdb, mal, tmdb
+from app.providers import igdb, japanese, mal, tmdb
 
 
 def igdb_multiquery_response(games):
@@ -43,14 +43,23 @@ class IGDBJapaneseSearch(TestCase):
         )
 
     @patch("app.providers.igdb.services.api_request")
-    def test_query_escapes_double_quotes(self, mock_api_request):
-        """A double quote in the search text cannot end the quoted string."""
+    def test_query_escapes_quotes_and_backslashes_in_every_clause(
+        self,
+        mock_api_request,
+    ):
+        """Quotes and backslashes in the search text cannot end the quoted string."""
         mock_api_request.return_value = igdb_multiquery_response([])
 
-        igdb.search('say "hi"', 1)
+        igdb.search('say "hi"\\', 1)
 
         _, kwargs = mock_api_request.call_args
-        self.assertIn('name ~ *"say \\"hi\\""*', kwargs["data"])
+        escaped = 'say \\"hi\\"\\\\'
+        self.assertIn(
+            f'where (name ~ *"{escaped}"*'
+            f' | alternative_names.name ~ *"{escaped}"*'
+            f' | game_localizations.name ~ *"{escaped}"*)',
+            kwargs["data"],
+        )
 
     @patch("app.providers.igdb.services.api_request")
     def test_result_carries_japanese_name(self, mock_api_request):
@@ -255,14 +264,73 @@ class MALJapaneseSearch(TestCase):
         self.assertEqual(args[2], "https://api.myanimelist.net/v2/manga")
 
     @patch("app.providers.mal.services.api_request")
-    def test_anilist_failure_returns_no_results(self, mock_api_request):
-        """A failing AniList leaves a short query empty, as it was before."""
-        mock_api_request.side_effect = requests.exceptions.ConnectionError
+    def test_anilist_failure_returns_no_results_and_is_not_cached(
+        self,
+        mock_api_request,
+    ):
+        """A failing AniList leaves a short query empty, but only for that request."""
+        anilist_page = {
+            "data": {
+                "Page": {
+                    "pageInfo": {"total": 1},
+                    "media": [
+                        {
+                            "idMal": 38000,
+                            "title": {
+                                "romaji": "Kimetsu no Yaiba",
+                                "native": "鬼滅の刃",
+                            },
+                            "coverImage": {"large": "http://example.com/kimetsu.jpg"},
+                        },
+                    ],
+                },
+            },
+        }
+        mock_api_request.side_effect = [
+            requests.exceptions.ConnectionError,
+            {"data": None, "errors": [{"message": "Too Many Requests"}]},
+            anilist_page,
+        ]
 
-        response = mal.search(MediaTypes.ANIME.value, "鬼滅", 1)
+        with self.assertLogs("app.providers.japanese", level="WARNING"):
+            failed = mal.search(MediaTypes.ANIME.value, "鬼滅", 1)
+        with self.assertLogs("app.providers.japanese", level="WARNING"):
+            rejected = mal.search(MediaTypes.ANIME.value, "鬼滅", 1)
+        recovered = mal.search(MediaTypes.ANIME.value, "鬼滅", 1)
 
-        self.assertEqual(response["results"], [])
-        self.assertEqual(response["total_results"], 0)
+        self.assertEqual(failed["results"], [])
+        self.assertEqual(failed["total_results"], 0)
+        self.assertEqual(rejected["results"], [])
+        self.assertEqual([anime["media_id"] for anime in recovered["results"]], [38000])
+        self.assertEqual(mock_api_request.call_count, 3)
+
+    @patch("app.providers.mal.services.api_request")
+    def test_anilist_results_are_cached(self, mock_api_request):
+        """A successful AniList answer is reused like any other search."""
+        mock_api_request.return_value = {
+            "data": {"Page": {"pageInfo": {"total": 0}, "media": []}},
+        }
+
+        mal.search(MediaTypes.ANIME.value, "鬼滅", 2)
+        mal.search(MediaTypes.ANIME.value, "鬼滅", 2)
+
+        mock_api_request.assert_called_once()
+        _, kwargs = mock_api_request.call_args
+        self.assertEqual(kwargs["params"]["variables"]["page"], 2)
+
+    @patch("app.providers.mal.services.api_request")
+    def test_three_japanese_characters_stay_on_myanimelist(self, mock_api_request):
+        """The redirect covers only what MyAnimeList refuses."""
+        mock_api_request.return_value = {"data": []}
+
+        mal.search(MediaTypes.ANIME.value, "鬼滅の", 1)
+        mal.search(MediaTypes.ANIME.value, " 鬼滅 ", 1)
+
+        urls = [call.args[2] for call in mock_api_request.call_args_list]
+        self.assertEqual(
+            urls,
+            ["https://api.myanimelist.net/v2/anime", "https://graphql.anilist.co"],
+        )
 
     @patch("app.providers.mal.services.api_request")
     def test_anilist_search_follows_the_adult_content_setting(self, mock_api_request):
@@ -393,12 +461,101 @@ class TMDBJapaneseSearch(TestCase):
                     },
                 ],
             ),
-            requests.exceptions.ConnectionError,
+            requests.exceptions.ConnectionError(
+                "Max retries exceeded with url: /3/search/movie?api_key=secret",
+            ),
         ]
 
-        response = tmdb.search(MediaTypes.MOVIE.value, "インセプション", 1)
+        with self.assertLogs("app.providers.japanese", level="WARNING") as logs:
+            response = tmdb.search(MediaTypes.MOVIE.value, "インセプション", 1)
 
         self.assertEqual(
             [(movie["title"], movie["native_title"]) for movie in response["results"]],
             [("Inception", None)],
         )
+        # the request url carries the api key, so it must stay out of the log
+        self.assertNotIn("api_key", "".join(logs.output))
+
+    @patch("app.providers.tmdb.services.api_request")
+    def test_failed_japanese_lookup_is_not_cached(self, mock_api_request):
+        """After a failed lookup the next identical search tries again."""
+        page = tmdb_search_response(
+            [
+                {
+                    "id": 27205,
+                    "title": "Inception",
+                    "original_title": "Inception",
+                    "original_language": "en",
+                    "poster_path": "/inception.jpg",
+                },
+            ],
+        )
+        mock_api_request.side_effect = [
+            page,
+            requests.exceptions.ReadTimeout,
+            page,
+            tmdb_search_response([{"id": 27205, "title": "インセプション"}]),
+        ]
+
+        with self.assertLogs("app.providers.japanese", level="WARNING"):
+            tmdb.search(MediaTypes.MOVIE.value, "インセプション", 1)
+        response = tmdb.search(MediaTypes.MOVIE.value, "インセプション", 1)
+
+        self.assertEqual(mock_api_request.call_count, 4)
+        self.assertEqual(response["results"][0]["native_title"], "インセプション")
+
+    @patch("app.providers.tmdb.services.api_request")
+    def test_japanese_tv_query_prefers_the_japanese_name(self, mock_api_request):
+        """For a show the Japanese lookup wins over the original name."""
+        mock_api_request.side_effect = [
+            tmdb_search_response(
+                [
+                    {
+                        "id": 1396,
+                        "name": "Breaking Bad",
+                        "original_name": "Breaking Bad",
+                        "original_language": "en",
+                        "poster_path": "/bb.jpg",
+                    },
+                    {
+                        "id": 70523,
+                        "name": "Dark",
+                        "original_name": "Dark",
+                        "original_language": "de",
+                        "poster_path": "/dark.jpg",
+                    },
+                ],
+            ),
+            tmdb_search_response([{"id": 1396, "name": "ブレイキング・バッド"}]),
+        ]
+
+        response = tmdb.search(MediaTypes.TV.value, "ブレイキング", 2)
+
+        _, second_call = mock_api_request.call_args_list
+        self.assertEqual(second_call.kwargs["params"]["page"], 2)
+        self.assertEqual(
+            [(tv["media_id"], tv["native_title"]) for tv in response["results"]],
+            [(1396, "ブレイキング・バッド"), (70523, None)],
+        )
+
+
+class ContainsJapanese(TestCase):
+    """Detection of Japanese script in a search text."""
+
+    def test_detects_kana_kanji_and_half_width_katakana(self):
+        """Any Japanese script counts, mixed with Latin or not."""
+        for text in (
+            "鬼滅",
+            "ゼルダの伝説",
+            "インセプション",
+            "ｶﾞﾝﾀﾞﾑ",
+            "Persona 5 ザ・ロイヤル",
+        ):
+            with self.subTest(text=text):
+                self.assertTrue(japanese.contains_japanese(text))
+
+    def test_ignores_latin_text(self):
+        """Plain Latin text, digits and punctuation are not Japanese."""
+        for text in ("Persona 5", "q", "", "2001: A Space Odyssey"):
+            with self.subTest(text=text):
+                self.assertFalse(japanese.contains_japanese(text))

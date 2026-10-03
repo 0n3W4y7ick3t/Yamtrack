@@ -107,7 +107,10 @@ def search(media_type, query, page):
                 "source": Sources.TMDB.value,
                 "media_type": media_type,
                 "title": get_title(media),
-                "native_title": japanese.tmdb_native_title(media, japanese_titles),
+                "native_title": japanese.tmdb_native_title(
+                    media,
+                    japanese_titles or {},
+                ),
                 "image": get_image_url(media["poster_path"]),
             }
             for media in response["results"]
@@ -122,7 +125,9 @@ def search(media_type, query, page):
             results,
         )
 
-        cache.set(cache_key, data)
+        # a page that is missing its Japanese titles is served but not kept
+        if japanese_titles is not None:
+            cache.set(cache_key, data)
 
     return data
 

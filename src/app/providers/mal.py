@@ -47,10 +47,13 @@ def search(media_type, query, page):
     data = cache.get(cache_key)
 
     if data is None and (
-        len(query) < min_query_length and japanese.contains_japanese(query)
+        len(query.strip()) < min_query_length and japanese.contains_japanese(query)
     ):
         # too short for MyAnimeList, which is common for Japanese titles
         data = japanese.anilist_search(media_type, query, page)
+        if data is None:
+            # answer this request empty without remembering the failure
+            return helpers.format_search_response(page, settings.PER_PAGE, 0, [])
         cache.set(cache_key, data)
 
     if data is None:

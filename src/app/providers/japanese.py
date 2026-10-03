@@ -12,13 +12,13 @@ from app.providers import services
 
 logger = logging.getLogger(__name__)
 
-JAPAN_REGION = "ja-JP"
+japan_region = "ja-JP"
 
 # hiragana, katakana, CJK ideographs and half-width katakana
-JAPANESE_SCRIPT = re.compile(r"[぀-ヿ㐀-䶿一-鿿ｦ-ﾟ]")
+japanese_script = re.compile(r"[぀-ヿ㐀-䶿一-鿿ｦ-ﾟ]")
 
-ANILIST_URL = "https://graphql.anilist.co"
-ANILIST_SEARCH_QUERY = """
+anilist_url = "https://graphql.anilist.co"
+anilist_search_query = """
 query ($search: String, $type: MediaType, $page: Int, $perPage: Int) {
   Page(page: $page, perPage: $perPage) {
     pageInfo {
@@ -41,14 +41,14 @@ query ($search: String, $type: MediaType, $page: Int, $perPage: Int) {
 
 def contains_japanese(text):
     """Return True when the text has kana or kanji."""
-    return bool(JAPANESE_SCRIPT.search(text))
+    return bool(japanese_script.search(text))
 
 
 def igdb_native_title(game):
     """Return the Japanese name of an IGDB game, if it has one."""
     for localization in game.get("game_localizations", []):
         region = localization.get("region") or {}
-        if region.get("identifier") == JAPAN_REGION and localization.get("name"):
+        if region.get("identifier") == japan_region and localization.get("name"):
             return localization["name"]
     return None
 
@@ -59,17 +59,18 @@ def mal_native_title(node):
 
 
 def tmdb_japanese_titles(url, params):
-    """Return the Japanese titles of a TMDB search page, keyed by TMDB id."""
+    """Return the Japanese titles of a TMDB search page keyed by id, None on failure."""
     try:
         response = services.api_request(
             Sources.TMDB.value,
             "GET",
             url,
-            params={**params, "language": JAPAN_REGION},
+            params={**params, "language": japan_region},
         )
-    except requests.exceptions.RequestException:
-        logger.warning("TMDB Japanese title lookup failed", exc_info=True)
-        return {}
+    except requests.exceptions.RequestException as error:
+        # the request url carries the api key, so the error itself stays out of the log
+        logger.warning("TMDB Japanese title lookup failed: %s", type(error).__name__)
+        return None
 
     return {
         media["id"]: media.get("title") or media.get("name")
@@ -91,7 +92,7 @@ def tmdb_native_title(media, japanese_titles):
 
 
 def anilist_search(media_type, query, page):
-    """Search AniList and return the matches as MyAnimeList results.
+    """Search AniList and return the matches as MyAnimeList results, None on failure.
 
     MyAnimeList rejects queries under 3 characters, which rules out short
     Japanese titles. AniList accepts them and knows each entry's MyAnimeList id.
@@ -108,15 +109,21 @@ def anilist_search(media_type, query, page):
         response = services.api_request(
             "ANILIST",
             "POST",
-            ANILIST_URL,
+            anilist_url,
             params={
-                "query": ANILIST_SEARCH_QUERY % {"adult_filter": adult_filter},
+                "query": anilist_search_query % {"adult_filter": adult_filter},
                 "variables": variables,
             },
         )
-    except requests.exceptions.RequestException:
-        logger.warning("AniList search failed for %s", query, exc_info=True)
-        return helpers.format_search_response(page, settings.PER_PAGE, 0, [])
+    except requests.exceptions.RequestException as error:
+        logger.warning("AniList search failed for %s: %s", query, type(error).__name__)
+        return None
+
+    if not response.get("data"):
+        logger.warning(
+            "AniList returned no data for %s: %s", query, response.get("errors")
+        )
+        return None
 
     page_data = response["data"]["Page"]
     results = [
