@@ -1,12 +1,14 @@
 import csv
 from datetime import UTC, datetime
 from io import StringIO
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.db.models import Q
 from django.test import TestCase
 from django.urls import reverse
 
+from app.mixins import disable_fetch_releases
 from app.models import (
     Anime,
     Book,
@@ -30,6 +32,18 @@ class ExportCSVTest(TestCase):
         self.credentials = {"username": "test", "password": "12345"}
         self.user = get_user_model().objects.create_superuser(**self.credentials)
         self.client.login(**self.credentials)
+
+        # saving media looks up provider metadata and reloads the calendar,
+        # neither of which the export needs
+        metadata_patcher = patch(
+            "app.providers.services.get_media_metadata",
+            side_effect=self.mock_get_media_metadata,
+        )
+        metadata_patcher.start()
+        self.addCleanup(metadata_patcher.stop)
+        fetch_releases = disable_fetch_releases()
+        fetch_releases.__enter__()
+        self.addCleanup(fetch_releases.__exit__, None, None, None)
 
         item_movie = Item.objects.create(
             media_id="10494",
@@ -139,6 +153,28 @@ class ExportCSVTest(TestCase):
             progress=120,
             start_date=datetime(2021, 6, 1, 0, 0, tzinfo=UTC),
         )
+
+    @staticmethod
+    def mock_get_media_metadata(media_type, *_args, **_kwargs):
+        """Return the little metadata that saving the fixtures needs."""
+        metadata = {
+            "title": "Friends",
+            "image": "https://image.url",
+            "max_progress": 500,
+        }
+        if media_type == MediaTypes.TV.value:
+            metadata["details"] = {"seasons": 1}
+            metadata["related"] = {
+                "seasons": [{"season_number": 1, "image": "https://image.url"}],
+            }
+        if media_type == "tv_with_seasons":
+            metadata["season/1"] = {
+                "episodes": [
+                    {"episode_number": number, "air_date": f"2023-06-{number:02d}"}
+                    for number in range(1, 11)
+                ],
+            }
+        return metadata
 
     def test_export_csv(self):
         """Basic test exporting media to CSV."""
