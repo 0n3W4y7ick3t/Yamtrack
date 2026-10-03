@@ -12,6 +12,13 @@ Yamtrack is a self hosted media tracker for movies, tv shows, anime, manga, vide
 
 <!-- --8<-- [end:docs-index-intro] -->
 
+## This fork
+
+A personal fork of [FuzzyGrim/Yamtrack](https://github.com/FuzzyGrim/Yamtrack), published as `ghcr.io/0n3w4y7ick3t/yamtrack`. Releases are tags `vX.Y.Z-fork.N` on `main`, where `X.Y.Z` is the upstream release they build on, and `latest` follows the newest release. What differs from upstream:
+
+- Home lists TV shows set to Planning, which have no season to stand for them.
+- Search finds media by Japanese name and shows the Japanese name under each result. Short Japanese anime and manga queries that MyAnimeList refuses are answered through AniList.
+
 ## 📚 Documentation
 
 The full documentation is available at [fuzzygrim.github.io/Yamtrack](https://fuzzygrim.github.io/Yamtrack/).
